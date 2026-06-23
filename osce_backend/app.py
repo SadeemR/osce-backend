@@ -13,7 +13,7 @@ CORS(app)
 # عميل Claude — يقرأ المفتاح من متغيرات البيئة فقط
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-3-5-sonnet-20241022"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
