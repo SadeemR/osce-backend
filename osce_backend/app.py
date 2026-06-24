@@ -10,14 +10,12 @@ from contextlib import contextmanager
 app = Flask(__name__)
 CORS(app)
 
-# عميل Claude — يقرأ المفتاح من متغيرات البيئة فقط
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 MODEL = "claude-sonnet-4-6"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# جلسة عامة (تكفي للاستخدام التعليمي بمستخدم واحد في كل مرة)
 conversation_history = []   # رسائل المحادثة بصيغة Anthropic
 case_data = {}              # بيانات الحالة الحالية
 case_language = "ar"        # لغة المحطة
@@ -66,7 +64,6 @@ def init_db():
             """)
 
 
-# تهيئة الجداول عند تحميل التطبيق (Gunicorn + __main__)
 if DATABASE_URL:
     init_db()
 
