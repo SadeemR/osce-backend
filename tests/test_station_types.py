@@ -179,3 +179,10 @@ def test_evaluation_with_empty_scores_is_retried_then_errors(env, monkeypatch):
     assert c.post("/evaluate", json={"session_id": sid}).status_code == 502
     assert len(calls) == 2
     assert calls[0]["max_tokens"] >= 4096
+
+
+def test_hidden_info_must_be_revealed_exactly():
+    prompt = A.build_persona_prompt(
+        {"patient": "Um Khalid", "hidden_info": "Her brother has diabetes and lost his leg"})
+    assert "قلها كما هي بالضبط" in prompt
+    assert "لا تخترع حقائق تتعارض" in prompt
