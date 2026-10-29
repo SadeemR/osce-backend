@@ -1,38 +1,74 @@
-# الباك إند العام لتطبيق OSCE
+# OSCE Simulator — Backend API
 
-خادم Flask **عام** يصلح لأي حالة وأي جامعة:
-- **إدخال الحالة متغيّر**: يبني شخصية المريض/المرافق ديناميكيًا من الحقول المُدخلة (المريض، الشكوى، النتائج، الموقف، الملف المرفق) — وليس محصورًا بحالة واحدة.
-- **التقييم متغيّر**: يقيّم وفق ورقة تقييم الجامعة التي تُرفع في التطبيق (`rubric_text`)، بمعاييرها وأوزانها ولغتها. وإن لم تُرفع ورقة، يستخدم نموذج SPIKES افتراضيًا.
+Flask REST API that powers the [OSCE Simulator app](https://github.com/SadeemR/osce-flutter-app). It turns any clinical case into an AI-simulated patient, and grades the student's conversation against the university's own rubric.
 
+> 🎓 Graduation project · Python + Flask + PostgreSQL + Claude API
+> 🔗 Frontend repository: [osce-flutter-app](https://github.com/SadeemR/osce-flutter-app)
 
-## المسارات
-- `GET  /health` — فحص الخادم
-- `POST /update-case` — بدء جلسة بحالة جديدة (JSON)
-- `POST /update-case-file` — بدء جلسة مع ملف مرفق (multipart)
-- `POST /chat` — إرسال رسالة الطبيب والحصول على رد المريض
-- `POST /evaluate` — تقييم وفق ورقة الجامعة
-- `POST /parse-rubric` — استخراج معايير ورقة تقييم من ملف
-- `POST /students/` · `/students/generate-prompt/` · `/save-result/` — بيانات الطلاب والنتائج
+---
 
-## كيف تحدّثين خادمك على Railway (خطوة بخطوة)
-خادمك الحالي يسحب الكود من GitHub. لتحديثه:
-1. استبدلي ملف `app.py` القديم بهذا الملف الجديد في مجلد مشروع الباك إند على جهازك.
-2. ارفعي التغيير إلى GitHub (إن كان المشروع مربوطًا بمستودع):
-   ```bash
-   git add app.py
-   git commit -m "جعل الباك إند عامًا للحالة والتقييم"
-   git push
-   ```
-3. Railway يكتشف الدفع تلقائيًا ويعيد النشر خلال دقيقة أو دقيقتين.
-4. تأكدي من المفتاح: في لوحة Railway → مشروعك → Variables، لازم يكون موجودًا متغيّر باسم `ANTHROPIC_API_KEY` وقيمته مفتاحك (يبدأ بـ `sk-ant-`). بدونه لن يردّ النموذج.
-5. بعد اكتمال النشر، جرّبي فتح `‎<عنوان-خادمك>/health` — يفترض يظهر `{"status":"ok",...}`.
+## What It Does
 
-> إن لم يكن المشروع مربوطًا بـ GitHub، تقدرين رفع الملفات يدويًا من لوحة Railway، أو ربط المستودع من Settings → Source.
+- **Dynamic patient persona** — builds a system prompt from the case fields (patient, complaint, findings, attitude, attached file), so it works for any case and any university.
+- **Rubric-driven evaluation** — scores the conversation using the uploaded rubric's exact criteria, weights and maximum scores, and returns structured JSON. Falls back to the **SPIKES** protocol when no rubric is given.
+- **Rubric parsing** — extracts criteria from an uploaded marking sheet.
+- **Bilingual** — Arabic or English, following the case and rubric language.
+- **Persistence** — stores students and evaluation results in PostgreSQL.
 
-## التشغيل محليًا (اختياري للتجربة)
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Flutter App] -- REST / JSON --> B[Flask API]
+    B -- persona & evaluation prompts --> C[Claude API]
+    B --> D[(PostgreSQL)]
+```
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `POST` | `/update-case` | Start a session with a new case (JSON) |
+| `POST` | `/update-case-file` | Start a session with an attached case file (multipart) |
+| `POST` | `/chat` | Send the doctor's message, get the patient's reply |
+| `POST` | `/evaluate` | Grade the conversation against the rubric |
+| `POST` | `/parse-rubric` | Extract criteria from a rubric file |
+| `POST` | `/students/` | Add a student |
+| `GET` | `/students/` | List students |
+| `POST` | `/students/generate-prompt/` | Generate a persona prompt for a case |
+| `POST` | `/save-result/` | Save an evaluation result |
+| `GET` | `/results/` | List saved results |
+
+## Tech Stack
+
+Python · Flask · Flask-CORS · Gunicorn · PostgreSQL (psycopg2) · Anthropic Claude API · Railway
+
+## Running Locally
+
 ```bash
+git clone https://github.com/SadeemR/osce-backend.git
+cd osce-backend
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY="sk-ant-..."
+
+export ANTHROPIC_API_KEY="your-key"
+export DATABASE_URL="postgresql://..."   # optional — database features are skipped without it
+
 python app.py
 ```
-ثم افتحي `http://localhost:8000/health`.
+
+Then open `http://localhost:8000/health`.
+
+## Deployment
+
+Deployed on Railway using the included `Procfile` (Gunicorn). Set `ANTHROPIC_API_KEY` and `DATABASE_URL` as environment variables — no secrets are stored in the code.
+
+## Future Improvements
+
+- Per-user session storage (conversation state is currently held in memory and shared)
+- Authentication and rate limiting
+- Automated tests
+
+## Author
+
+**Sadeem Mubarak** — [GitHub](https://github.com/SadeemR)
