@@ -87,3 +87,95 @@ def test_database_endpoints_work_without_database(env, monkeypatch):
     assert c.post("/students/", json={"number": 1, "grade": 90}).status_code == 200
     assert c.get("/students/").get_json() == {"students": []}
     assert c.get("/results/").get_json() == {"results": []}
+
+
+def test_bad_news_keeps_fixed_greeting(env):
+    c, fake = env
+    r = c.post("/update-case", json={"patient": "Ahmad", "language": "en"}).get_json()
+    assert r["initial_message"] == A.default_greeting("en")
+    assert fake.calls == []  # no model call needed
+
+
+def test_history_taking_opening_comes_from_the_case(env):
+    c, fake = env
+    r = c.post("/update-case", json={
+        "patient": "Shady", "station_type": "history_taking",
+        "language": "en"}).get_json()
+    assert "test results" not in r["initial_message"]
+    assert len(fake.calls) == 1
+    assert "Answer in English" in fake.calls[0]["messages"][0]["content"]
+    assert "History taking" in fake.calls[0]["system"]
+    # the opening line becomes the first turn of that session
+    c.post("/chat", json={"session_id": r["session_id"], "message": "Hi"})
+    first = fake.calls[-1]["messages"][0]
+    assert first["role"] == "assistant"
+    assert first["content"] == r["initial_message"]
+
+
+def test_history_opening_falls_back_on_error(env, monkeypatch):
+    c, fake = env
+
+    def boom(**kw):
+        raise RuntimeError("api down")
+    monkeypatch.setattr(fake, "create", boom)
+    r = c.post("/update-case", json={"station_type": "history_taking",
+                                     "language": "ar"}).get_json()
+    assert r["initial_message"] == "السلام عليكم دكتور."
+
+
+class _Resp:
+    def __init__(self, text, stop_reason="end_turn"):
+        import types
+        self.content = [types.SimpleNamespace(text=text)]
+        self.stop_reason = stop_reason
+
+
+GOOD = ('{"scores": {"History": {"score": 2, "max_score": 3, "weight": 1, '
+        '"feedback": "ok"}}, "overall_feedback": "fine", "rubric_used": "x"}')
+
+
+def _start_and_chat(c):
+    r = c.post("/update-case", json={"patient": "Ahmad"}).get_json()
+    c.post("/chat", json={"session_id": r["session_id"], "message": "hi"})
+    return r["session_id"]
+
+
+def test_evaluation_retries_when_truncated(env, monkeypatch):
+    c, fake = env
+    sid = _start_and_chat(c)
+    replies = iter([_Resp('{"scores": {"Hist', "max_tokens"), _Resp(GOOD)])
+    monkeypatch.setattr(fake, "create", lambda **kw: next(replies))
+    r = c.post("/evaluate", json={"session_id": sid})
+    assert r.status_code == 200
+    assert r.get_json()["scores"]["History"]["score"] == 2
+
+
+def test_evaluation_tolerates_markdown_fences(env, monkeypatch):
+    c, fake = env
+    sid = _start_and_chat(c)
+    monkeypatch.setattr(fake, "create",
+                        lambda **kw: _Resp("Here you go:\n```json\n" + GOOD + "\n```"))
+    assert c.post("/evaluate", json={"session_id": sid}).status_code == 200
+
+
+def test_evaluation_failure_is_an_error_not_a_zero_score(env, monkeypatch):
+    c, fake = env
+    sid = _start_and_chat(c)
+    monkeypatch.setattr(fake, "create", lambda **kw: _Resp("not json at all"))
+    r = c.post("/evaluate", json={"session_id": sid})
+    assert r.status_code == 502
+    assert "error" in r.get_json()
+
+
+def test_evaluation_with_empty_scores_is_retried_then_errors(env, monkeypatch):
+    c, fake = env
+    sid = _start_and_chat(c)
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        return _Resp('{"scores": {}, "overall_feedback": "", "rubric_used": ""}')
+    monkeypatch.setattr(fake, "create", create)
+    assert c.post("/evaluate", json={"session_id": sid}).status_code == 502
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] >= 4096

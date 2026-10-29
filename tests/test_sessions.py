@@ -20,7 +20,9 @@ class FakeMessages:
         self.calls.append(kw)
         last = kw["messages"][-1]["content"]
         if "ممتحن" in last:  # evaluation prompt
-            text = '{"scores": {}, "overall_feedback": "ok", "rubric_used": "x"}'
+            text = ('{"scores": {"Rapport": {"score": 1, "max_score": 2, '
+                    '"weight": 1, "feedback": "ok"}}, '
+                    '"overall_feedback": "ok", "rubric_used": "x"}')
         else:
             text = f"reply to: {last}"
         return types.SimpleNamespace(content=[types.SimpleNamespace(text=text)])

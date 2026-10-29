@@ -44,7 +44,7 @@ def _cleanup_sessions():
 def create_session(case, language):
     """إنشاء جلسة جديدة وإرجاع معرّفها والتحية الافتتاحية."""
     session_id = f"sess_{uuid.uuid4().hex}"
-    greeting = default_greeting(language)
+    greeting = opening_line(case, language)
     with sessions_lock:
         _cleanup_sessions()
         sessions[session_id] = {
@@ -212,6 +212,38 @@ def default_greeting(language="ar"):
     return "Hello Doctor.. I came today to get the test results. Is everything okay?"
 
 
+def opening_line(case, language="ar"):
+    """الجملة الأولى التي يقولها المريض عند بدء المحطة.
+
+    محطة الخبر السيئ: الجملة الثابتة المعتادة.
+    محطة التاريخ المرضي: يولّدها النموذج من الحالة (مثل "I have cough doctor")،
+    ومع أي خطأ نرجع لتحية بسيطة لا تكشف شيئًا.
+    """
+    if normalize_station_type(case.get("station_type")) == STATION_BAD_NEWS:
+        return default_greeting(language)
+
+    fallback = "السلام عليكم دكتور." if language == "ar" else "Hello doctor."
+    instruction = (
+        "(تعليمات من النظام وليست من الطبيب) دخل الطبيب الغرفة الآن. "
+        "قل جملتك الافتتاحية فقط كما يقولها المريض عند دخوله: الشكوى الرئيسية "
+        "باختصار وبكلماتك العادية. إن كانت في الحالة جملة افتتاحية محددة "
+        "(Opening statement) فاستخدمها. لا تذكر أي تفاصيل أخرى. "
+        + ("أجب بالعربية المحكية." if language == "ar" else "Answer in English.")
+    )
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=80,
+            system=build_persona_prompt(case, language),
+            messages=[{"role": "user", "content": instruction}],
+        )
+        line = response.content[0].text.strip().strip('"').strip()
+        return line or fallback
+    except Exception as e:
+        print(f"Opening line error: {e}")
+        return fallback
+
+
 # =====================================================
 # المسارات
 # =====================================================
@@ -289,6 +321,44 @@ DEFAULT_HISTORY_RUBRIC = """لم تُرفق ورقة تقييم. استخدم م
 - Communication & Closure (التواصل العام والتلخيص والإغلاق) — وزن 1، من 2"""
 
 
+def parse_json_object(text):
+    """يستخرج أول كائن JSON من رد النموذج (يتحمل أسوار الماركداون والنص الزائد)."""
+    text = (text or "").replace("```json", "").replace("```", "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON object in response")
+    return json.loads(text[start:end + 1])
+
+
+def run_evaluation(eval_prompt):
+    """يطلب التقييم من النموذج، ويعيد المحاولة مرة إن انقطع الرد أو كان غير صالح.
+
+    يعيد None إن فشلت المحاولتان، حتى يعرض التطبيق خطأ بدل درجة صفر وهمية.
+    """
+    attempts = [
+        eval_prompt,
+        eval_prompt + "\n\nتنبيه: ردك السابق كان طويلًا أو غير مكتمل. "
+        "اختصر: ملاحظة كل معيار في 12 كلمة كحد أقصى، والتعليق العام في جملتين.",
+    ]
+    for prompt in attempts:
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                print("Evaluation truncated (max_tokens), retrying")
+                continue
+            evaluation = parse_json_object(response.content[0].text)
+            if not isinstance(evaluation.get("scores"), dict) or not evaluation["scores"]:
+                raise ValueError("evaluation has no scores")
+            return evaluation
+        except Exception as e:
+            print(f"Evaluation error: {e}")
+    return None
+
+
 @app.route("/evaluate", methods=["POST"])
 def evaluate():
     data = request.json or {}
@@ -338,6 +408,9 @@ def evaluate():
 - استخرج المعايير من ورقة التقييم أعلاه كما هي، واستخدم أسماءها وأوزانها ودرجاتها القصوى تمامًا.
 - إذا كانت الورقة بالإنجليزية فاكتب أسماء المعايير والملاحظات بالإنجليزية، وإذا كانت بالعربية فبالعربية.
 - لا تخترع معايير غير موجودة في الورقة، ولا تتجاهل أيًا منها.
+- إن احتوت الورقة على بنود فرعية كثيرة، فقيّم على مستوى الأقسام الرئيسية فيها (بحد أقصى 12 معيارًا)، واذكر في ملاحظة كل قسم البنود الفرعية التي فاتت الطالب.
+- إن كان الملف يحتوي أيضًا على تعليمات للممثل أو معلومات للمريض، فتجاهلها في التقييم واستخدم معايير النجاح فقط.
+- اجعل كل ملاحظة لمعيار في جملة قصيرة، والتعليق العام في 2-4 جمل.
 
 أعد النتيجة بصيغة JSON فقط دون أي نص آخر ودون أسوار ماركداون، بهذا الشكل بالضبط:
 {{
@@ -349,27 +422,9 @@ def evaluate():
 }}
 كن منصفًا ودقيقًا، ولا تمنح درجات لمعايير لم يحققها الطالب فعلًا."""
 
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": eval_prompt}],
-        )
-        result_text = response.content[0].text.strip()
-        result_text = result_text.replace(
-            "```json", "").replace("```", "").strip()
-        start, end = result_text.find("{"), result_text.rfind("}")
-        if start >= 0 and end > start:
-            result_text = result_text[start:end + 1]
-        evaluation = json.loads(result_text)
-    except Exception as e:
-        print(f"Evaluation error: {e}")
-        evaluation = {
-            "scores": {},
-            "overall_feedback": "حدث خطأ في التقييم.",
-            "rubric_used": "N/A",
-        }
-
+    evaluation = run_evaluation(eval_prompt)
+    if evaluation is None:
+        return jsonify({"error": "تعذّر إكمال التقييم، حاول مرة أخرى."}), 502
     return jsonify(evaluation)
 
 
