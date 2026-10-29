@@ -186,3 +186,10 @@ def test_hidden_info_must_be_revealed_exactly():
         {"patient": "Um Khalid", "hidden_info": "Her brother has diabetes and lost his leg"})
     assert "قلها كما هي بالضبط" in prompt
     assert "لا تخترع حقائق تتعارض" in prompt
+
+
+def test_patient_answers_are_kept_short():
+    for st in ("bad_news", "history_taking"):
+        prompt = A.build_persona_prompt({"patient": "x", "station_type": st})
+        assert '"نعم" أو "لا"' in prompt
+        assert "لا تطرح أكثر من سؤال واحد" in prompt
