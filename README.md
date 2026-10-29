@@ -13,6 +13,7 @@ Flask REST API that powers the [OSCE Simulator app](https://github.com/SadeemR/o
 - **Rubric-driven evaluation** — scores the conversation using the uploaded rubric's exact criteria, weights and maximum scores, and returns structured JSON. Falls back to the **SPIKES** protocol when no rubric is given.
 - **Rubric parsing** — extracts criteria from an uploaded marking sheet.
 - **Bilingual** — Arabic or English, following the case and rubric language.
+- **Isolated sessions** — every case gets its own `session_id`, so multiple students can practice at the same time without their conversations mixing. Idle sessions expire after 2 hours.
 - **Persistence** — stores students and evaluation results in PostgreSQL.
 
 ## Architecture
@@ -29,10 +30,10 @@ flowchart LR
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `POST` | `/update-case` | Start a session with a new case (JSON) |
-| `POST` | `/update-case-file` | Start a session with an attached case file (multipart) |
-| `POST` | `/chat` | Send the doctor's message, get the patient's reply |
-| `POST` | `/evaluate` | Grade the conversation against the rubric |
+| `POST` | `/update-case` | Start a session with a new case (JSON) → returns `session_id` |
+| `POST` | `/update-case-file` | Start a session with an attached case file (multipart) → returns `session_id` |
+| `POST` | `/chat` | Send `session_id` + the doctor's message, get the patient's reply |
+| `POST` | `/evaluate` | Grade that session's conversation against the rubric |
 | `POST` | `/parse-rubric` | Extract criteria from a rubric file |
 | `POST` | `/students/` | Add a student |
 | `GET` | `/students/` | List students |
@@ -59,15 +60,24 @@ python app.py
 
 Then open `http://localhost:8000/health`.
 
+## Tests
+
+```bash
+pip install pytest
+pytest
+```
+
+The tests mock the Claude API, so they run offline at no cost. They cover session isolation between concurrent students, session expiry, evaluation scoping and input validation.
+
 ## Deployment
 
 Deployed on Railway using the included `Procfile` (Gunicorn). Set `ANTHROPIC_API_KEY` and `DATABASE_URL` as environment variables — no secrets are stored in the code.
 
 ## Future Improvements
 
-- Per-user session storage (conversation state is currently held in memory and shared)
+- Move session storage to Redis so the API can scale beyond a single worker
 - Authentication and rate limiting
-- Automated tests
+- Measure evaluator agreement with human examiners
 
 ## Author
 

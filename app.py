@@ -3,6 +3,9 @@ from flask_cors import CORS
 import anthropic
 import os
 import json
+import time
+import uuid
+import threading
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
@@ -16,9 +19,56 @@ MODEL = "claude-sonnet-4-6"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-conversation_history = []   # رسائل المحادثة بصيغة Anthropic
-case_data = {}              # بيانات الحالة الحالية
-case_language = "ar"        # لغة المحطة
+# =====================================================
+# الجلسات — كل طالب له محادثته الخاصة
+# =====================================================
+# session_id -> {"case": dict, "language": str, "history": list, "last_active": float}
+sessions = {}
+sessions_lock = threading.Lock()
+SESSION_TTL_SECONDS = 2 * 60 * 60   # الجلسة تنتهي بعد ساعتين بدون نشاط
+MAX_SESSIONS = 500
+
+
+def _cleanup_sessions():
+    """حذف الجلسات المنتهية، وأقدمها إذا تجاوزنا الحد الأقصى. يُستدعى داخل القفل."""
+    now = time.time()
+    for sid in [k for k, v in sessions.items()
+                if now - v["last_active"] > SESSION_TTL_SECONDS]:
+        del sessions[sid]
+    if len(sessions) > MAX_SESSIONS:
+        oldest = sorted(sessions, key=lambda k: sessions[k]["last_active"])
+        for sid in oldest[:len(sessions) - MAX_SESSIONS]:
+            del sessions[sid]
+
+
+def create_session(case, language):
+    """إنشاء جلسة جديدة وإرجاع معرّفها والتحية الافتتاحية."""
+    session_id = f"sess_{uuid.uuid4().hex}"
+    greeting = default_greeting(language)
+    with sessions_lock:
+        _cleanup_sessions()
+        sessions[session_id] = {
+            "case": case,
+            "language": language,
+            "history": [{"role": "assistant", "content": greeting}],
+            "last_active": time.time(),
+        }
+    return session_id, greeting
+
+
+def get_session(session_id):
+    """إرجاع الجلسة إن وُجدت ولم تنتهِ، وتحديث وقت آخر نشاط."""
+    if not session_id:
+        return None
+    with sessions_lock:
+        session = sessions.get(session_id)
+        if session is None:
+            return None
+        if time.time() - session["last_active"] > SESSION_TTL_SECONDS:
+            del sessions[session_id]
+            return None
+        session["last_active"] = time.time()
+        return session
 
 
 # =====================================================
@@ -132,22 +182,17 @@ def health():
 
 @app.route("/update-case", methods=["POST"])
 def update_case():
-    global conversation_history, case_data, case_language
-
     case_data = request.json or {}
-    case_language = case_data.get("language", "ar")
+    language = case_data.get("language", "ar")
 
-    greeting = default_greeting(case_language)
-    conversation_history = [{"role": "assistant", "content": greeting}]
-
-    return jsonify({"status": "success", "initial_message": greeting})
+    session_id, greeting = create_session(case_data, language)
+    return jsonify({"status": "success", "session_id": session_id,
+                    "initial_message": greeting})
 
 
 @app.route("/update-case-file", methods=["POST"])
 def update_case_file():
     """نفس /update-case لكن مع ملف مرفق (multipart)."""
-    global conversation_history, case_data, case_language
-
     case_data = {
         "patient":       request.form.get("patient",        ""),
         "complaint":     request.form.get("complaint",      ""),
@@ -157,44 +202,41 @@ def update_case_file():
         "attached_name": request.form.get("attached_name",  ""),
         "language":      request.form.get("language",       "ar"),
     }
-    case_language = case_data.get("language", "ar")
+    language = case_data.get("language", "ar")
 
-    greeting = default_greeting(case_language)
-    conversation_history = [{"role": "assistant", "content": greeting}]
-
-    return jsonify({"status": "success", "initial_message": greeting})
+    session_id, greeting = create_session(case_data, language)
+    return jsonify({"status": "success", "session_id": session_id,
+                    "initial_message": greeting})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    global conversation_history
-
     data = request.json or {}
     doctor_message = (data.get("message") or "").strip()
     if not doctor_message:
         return jsonify({"error": "رسالة فارغة"}), 400
 
-    if not conversation_history:
-        conversation_history = [
-            {"role": "assistant", "content": default_greeting(case_language)}
-        ]
+    session = get_session(data.get("session_id"))
+    if session is None:
+        return jsonify({"error": "الجلسة غير موجودة أو انتهت، ابدأ حالة جديدة"}), 404
 
-    conversation_history.append({"role": "user", "content": doctor_message})
+    history = session["history"]
+    history.append({"role": "user", "content": doctor_message})
 
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=200,
-            system=build_persona_prompt(case_data, case_language),
-            messages=conversation_history,
+            system=build_persona_prompt(session["case"], session["language"]),
+            messages=history,
         )
         reply = response.content[0].text.strip()
     except Exception as e:
         print(f"Claude API error: {e}")
         reply = "آسفة دكتور.. ما فهمت، ممكن توضح أكثر؟"
 
-    conversation_history.append({"role": "assistant", "content": reply})
-    return jsonify({"reply": reply, "conversation_length": len(conversation_history)})
+    history.append({"role": "assistant", "content": reply})
+    return jsonify({"reply": reply, "conversation_length": len(history)})
 
 
 @app.route("/evaluate", methods=["POST"])
@@ -202,9 +244,20 @@ def evaluate():
     data = request.json or {}
     rubric_text = (data.get("rubric_text") or "").strip()
 
+    session = get_session(data.get("session_id"))
+    if session is not None:
+        history = session["history"]
+    else:
+        # احتياط: لو انتهت الجلسة في السيرفر، نقيّم من الرسائل اللي أرسلها التطبيق
+        history = [
+            {"role": m.get("sender"), "content": m.get("text", "")}
+            for m in (data.get("messages") or [])
+            if m.get("sender") in ("user", "assistant") and m.get("text")
+        ]
+
     full_conversation = "\n".join(
         f"{'الطبيب' if m['role'] == 'user' else 'المريض/المرافق'}: {m['content']}"
-        for m in conversation_history
+        for m in history
     )
     if not full_conversation:
         return jsonify({"error": "لا يوجد محادثة للتقييم"}), 400
