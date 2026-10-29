@@ -121,12 +121,45 @@ if DATABASE_URL:
 # =====================================================
 # بناء شخصية المريض/المرافق ديناميكيًا من الحالة
 # =====================================================
+# =====================================================
+# أنواع المحطات — لكل نوع قواعد خاصة لشخصية المريض
+# =====================================================
+STATION_BAD_NEWS = "bad_news"
+STATION_HISTORY = "history_taking"
+STATION_TYPES = {STATION_BAD_NEWS, STATION_HISTORY}
+
+
+def normalize_station_type(value):
+    """أي قيمة غير معروفة تُعامل كمحطة إيصال خبر سيئ (السلوك القديم)."""
+    value = (value or "").strip().lower()
+    return value if value in STATION_TYPES else STATION_BAD_NEWS
+
+
+STATION_RULES = {
+    STATION_BAD_NEWS: """نوع المحطة: إيصال خبر سيئ (Breaking bad news).
+- قد تكون المريض نفسه إن كان بالغًا وواعيًا، أو أحد والديه إن كان طفلًا، أو أحد أقاربه — اختر الدور الأنسب للحالة.
+- لا تكشف التشخيص بنفسك؛ دع الطالب (الطبيب) هو من يقود الحوار ويوصل الخبر.
+- أظهر المشاعر المناسبة (قلق، خوف، صدمة، إنكار...) بشكل طبيعي ومتدرّج.
+- إن أخبرك الطبيب بالتشخيص، أبدِ ردّ فعل طبيعيًا واسأل عن: السبب، العلاج، المتوقّع، وما المسموح والممنوع.""",
+    STATION_HISTORY: """نوع المحطة: أخذ التاريخ المرضي (History taking).
+- أنت المريض نفسه (إلا إن كانت الحالة لطفل، فتكون أحد والديه).
+- ابدأ بالشكوى الرئيسية فقط كما يقولها مريض عادي، ولا تسرد بقية التفاصيل من نفسك.
+- أجب فقط على قدر السؤال الذي سأله الطبيب. لا تتطوع بمعلومات لم يُسأل عنها.
+- إن كان السؤال عامًا جدًا، أعطِ إجابة عامة قصيرة؛ إن كان محددًا، أعطِ التفصيل المطلوب.
+- إن سألك عن شيء غير مذكور في الحالة، أجب بإجابة طبيعية لا تتعارض معها (غالبًا بالنفي).
+- لا تذكر التشخيص أو اسم المرض أبدًا؛ أنت لا تعرفه.
+- في نهاية المقابلة، أو إن أعطاك الطبيب فرصة، اسأل الأسئلة المذكورة في الحالة (مثل: ما مشكلتي؟ هل أحتاج دواء؟).""",
+}
+
+
 def build_persona_prompt(case, language="ar"):
-    """يبني توجيه النظام من بيانات الحالة المُدخلة — عام لأي حالة."""
+    """يبني توجيه النظام من بيانات الحالة المُدخلة — عام لأي حالة ولكل نوع محطة."""
+    station_type = normalize_station_type(case.get("station_type"))
     patient = (case.get("patient") or "").strip()
     complaint = (case.get("complaint") or "").strip()
     results = (case.get("results") or "").strip()
     situation = (case.get("situation") or "").strip()
+    hidden = (case.get("hidden_info") or "").strip()
     attached = (case.get("attached_text") or "").strip()
 
     details = []
@@ -143,27 +176,34 @@ def build_persona_prompt(case, language="ar"):
     details_text = "\n".join(
         details) if details else "لم تُحدَّد تفاصيل دقيقة."
 
+    hidden_block = ""
+    if hidden:
+        hidden_block = f"""
+
+معلومات سرية (لا يراها الطالب):
+لا تكشف أي معلومة من هذه إلا إذا سألك الطبيب عنها مباشرة أو عن موضوعها. اكشف فقط الجزء الذي يجيب سؤاله.
+{hidden}"""
+
     lang_rule = (
-        "تحدثي بنفس لغة الطبيب: إن خاطبك بالعربية فأجيبي بلهجة عربية محكية طبيعية، "
-        "وإن خاطبك بالإنجليزية فأجيبي بالإنجليزية."
+        "تحدث بنفس لغة الطبيب: إن خاطبك بالعربية فأجب بلهجة عربية محكية طبيعية، "
+        "وإن خاطبك بالإنجليزية فأجب بالإنجليزية."
     )
 
-    return f"""أنتِ تؤدّين دور الشخص الذي يتحدث مع الطالب في محطة OSCE لمهارات التواصل.
-حدّدي من السياق التالي مَن أنتِ بالضبط: قد تكونين المريض نفسه إن كان بالغًا وواعيًا،
-أو أحد والديه إن كان طفلًا، أو زوجه/زوجته أو أحد أقاربه — اختاري الدور الأنسب للحالة.
+    return f"""أنت تؤدّي دور الشخص الذي يتحدث مع الطالب في محطة OSCE لمهارات التواصل.
+التزم بجنس الشخصية وعمرها كما في تفاصيل الحالة.
+
+{STATION_RULES[station_type]}
 
 تفاصيل الحالة:
-{details_text}
+{details_text}{hidden_block}
 
-شخصيتك وقواعدك:
-- أنتِ شخص عادي غير طبي، تستخدمين لغة يومية بسيطة بلا مصطلحات طبية.
-- أظهري المشاعر المناسبة للموقف (قلق، خوف، صدمة...) بشكل طبيعي ومتدرّج.
-- لا تكشفي التشخيص بنفسك؛ دعي الطالب (الطبيب) هو من يقود الحوار ويوصل الخبر.
-- إن أخبرك الطبيب بالتشخيص، أبدي ردّ فعل طبيعيًا واسألي عن: السبب، العلاج، المتوقّع، وما المسموح والممنوع.
-- أجيبي بجملة إلى ثلاث جمل فقط في كل مرة، مثل حوار حقيقي.
-- لا تعطي معلومات طبية؛ فقط اسألي وأبدي ردود فعل إنسانية.
+قواعد عامة:
+- أنت شخص عادي غير طبي، تستخدم لغة يومية بسيطة بلا مصطلحات طبية.
+- أجب بجملة إلى ثلاث جمل فقط في كل مرة، مثل حوار حقيقي.
+- لا تعطِ معلومات طبية؛ فقط أجب عن نفسك واسأل وأبدِ ردود فعل إنسانية.
+- إن كان في ملف الحالة تعليمات للممثل (Role player)، فاتبعها، وتجاهل أي معايير تقييم أو تعليمات للممتحن فيه.
 - {lang_rule}
-- ابقي في الشخصية دائمًا ولا تذكري أبدًا أنكِ ذكاء اصطناعي."""
+- ابقَ في الشخصية دائمًا ولا تذكر أبدًا أنك ذكاء اصطناعي."""
 
 
 def default_greeting(language="ar"):
@@ -201,6 +241,8 @@ def update_case_file():
         "attached_text": request.form.get("attached_text",  ""),
         "attached_name": request.form.get("attached_name",  ""),
         "language":      request.form.get("language",       "ar"),
+        "station_type":  request.form.get("station_type",   ""),
+        "hidden_info":   request.form.get("hidden_info",    ""),
     }
     language = case_data.get("language", "ar")
 
@@ -239,6 +281,14 @@ def chat():
     return jsonify({"reply": reply, "conversation_length": len(history)})
 
 
+DEFAULT_HISTORY_RUBRIC = """لم تُرفق ورقة تقييم. استخدم معايير عامة لمحطة أخذ التاريخ المرضي من 10 درجات:
+- Rapport & Introduction (التعريف بالنفس والتأكد من هوية المريض) — وزن 1، من 1
+- Presenting Complaint (استكشاف الشكوى الرئيسية بتفصيل) — وزن 1، من 2
+- Relevant History (التاريخ المرضي والدوائي والعائلي والاجتماعي ذو الصلة) — وزن 1، من 3
+- Patient's Concerns (استكشاف مخاوف المريض وتوقعاته والرد على أسئلته) — وزن 1، من 2
+- Communication & Closure (التواصل العام والتلخيص والإغلاق) — وزن 1، من 2"""
+
+
 @app.route("/evaluate", methods=["POST"])
 def evaluate():
     data = request.json or {}
@@ -265,6 +315,10 @@ def evaluate():
     if rubric_text:
         rubric_block = f"""ورقة تقييم الجامعة (التزم بمعاييرها وأوزانها ودرجاتها القصوى حرفيًا):
 {rubric_text}"""
+    elif normalize_station_type(
+            (session or {}).get("case", {}).get("station_type")
+            or data.get("station_type")) == STATION_HISTORY:
+        rubric_block = DEFAULT_HISTORY_RUBRIC
     else:
         rubric_block = """لم تُرفق ورقة تقييم. استخدم معايير عامة لمهارات التواصل (نموذج SPIKES) من 10 درجات:
 - Setting (التهيئة وبناء العلاقة) — وزن 1، من 1
@@ -365,6 +419,8 @@ def parse_rubric():
 @app.route("/students/", methods=["POST"])
 def add_student():
     data = request.json or {}
+    if not DATABASE_URL:
+        return jsonify({"status": "skipped", "message": "no database configured"})
     number = data.get("number")
     grade = data.get("grade")
     if number is None:
@@ -381,6 +437,8 @@ def add_student():
 
 @app.route("/students/", methods=["GET"])
 def list_students():
+    if not DATABASE_URL:
+        return jsonify({"students": []})
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM students ORDER BY number;")
@@ -398,6 +456,8 @@ def generate_prompt():
 @app.route("/save-result/", methods=["POST"])
 def save_result():
     data = request.json or {}
+    if not DATABASE_URL:
+        return jsonify({"status": "skipped", "message": "no database configured"})
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -421,6 +481,8 @@ def save_result():
 def list_results():
     """إرجاع جميع النتائج — يمكن تصفيتها برقم الطالب."""
     student_number = request.args.get("student_number")
+    if not DATABASE_URL:
+        return jsonify({"results": []})
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if student_number:

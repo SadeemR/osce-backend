@@ -10,7 +10,9 @@ Flask REST API that powers the [OSCE Simulator app](https://github.com/SadeemR/o
 ## What It Does
 
 - **Dynamic patient persona** — builds a system prompt from the case fields (patient, complaint, findings, attitude, attached file), so it works for any case and any university.
-- **Rubric-driven evaluation** — scores the conversation using the uploaded rubric's exact criteria, weights and maximum scores, and returns structured JSON. Falls back to the **SPIKES** protocol when no rubric is given.
+- **Station types** — `bad_news` (breaking bad news) and `history_taking`. Each type gets its own patient behavior: in history taking the patient opens with the chief complaint only and answers just what is asked.
+- **Hidden case details** — `hidden_info` is given to the AI patient but never shown to the student; the patient reveals each detail only when asked about it.
+- **Rubric-driven evaluation** — scores the conversation using the uploaded rubric's exact criteria, weights and maximum scores, and returns structured JSON. Without a rubric it falls back to a default for the station type (SPIKES for bad news, a history-taking rubric for history taking).
 - **Rubric parsing** — extracts criteria from an uploaded marking sheet.
 - **Bilingual** — Arabic or English, following the case and rubric language.
 - **Isolated sessions** — every case gets its own `session_id`, so multiple students can practice at the same time without their conversations mixing. Idle sessions expire after 2 hours.
@@ -58,7 +60,7 @@ export DATABASE_URL="postgresql://..."   # optional — database features are sk
 python app.py
 ```
 
-Then open `http://localhost:8000/health`.
+Then open `http://localhost:8000/health`. Without `DATABASE_URL`, the API still works; results simply aren't stored.
 
 ## Tests
 
@@ -67,7 +69,7 @@ pip install pytest
 pytest
 ```
 
-The tests mock the Claude API, so they run offline at no cost. They cover session isolation between concurrent students, session expiry, evaluation scoping and input validation.
+The tests mock the Claude API, so they run offline at no cost. They cover session isolation, session expiry, station-specific patient behavior, hidden case details, default rubrics and running without a database.
 
 ## Deployment
 
